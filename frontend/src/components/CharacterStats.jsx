@@ -38,33 +38,44 @@ function CharacterStats({ stats, inventory }) {
       )}
       
       <div className="stats-grid">
-        <div className="stat-item health">
-          <div className="stat-label">❤️ Health</div>
-          <div className="stat-bar">
-            <div 
-              className="stat-fill" 
-              style={{ 
-                width: `${stats.health}%`,
-                backgroundColor: getHealthColor(stats.health)
-              }}
-            ></div>
-          </div>
-          <div className="stat-value">{stats.health}/100</div>
-        </div>
+        {(() => {
+          const maxHealth = stats.maxHealth || 100;
+          const maxMana = stats.maxMana || 50;
+          const healthPct = Math.min(100, Math.max(0, (stats.health / maxHealth) * 100));
+          const manaPct = Math.min(100, Math.max(0, (stats.mana / maxMana) * 100));
 
-        <div className="stat-item mana">
-          <div className="stat-label">✨ Mana</div>
-          <div className="stat-bar">
-            <div 
-              className="stat-fill" 
-              style={{ 
-                width: `${stats.mana}%`,
-                backgroundColor: getManaColor(stats.mana)
-              }}
-            ></div>
-          </div>
-          <div className="stat-value">{stats.mana}/100</div>
-        </div>
+          return (
+            <>
+              <div className="stat-item health">
+                <div className="stat-label">❤️ Health</div>
+                <div className="stat-bar">
+                  <div 
+                    className="stat-fill" 
+                    style={{ 
+                      width: `${healthPct}%`,
+                      backgroundColor: getHealthColor(healthPct)
+                    }}
+                  ></div>
+                </div>
+                <div className="stat-value">{stats.health}/{maxHealth}</div>
+              </div>
+
+              <div className="stat-item mana">
+                <div className="stat-label">✨ Mana</div>
+                <div className="stat-bar">
+                  <div 
+                    className="stat-fill" 
+                    style={{ 
+                      width: `${manaPct}%`,
+                      backgroundColor: getManaColor(manaPct)
+                    }}
+                  ></div>
+                </div>
+                <div className="stat-value">{stats.mana}/{maxMana}</div>
+              </div>
+            </>
+          );
+        })()}
 
         <div className="stat-item">
           <div className="stat-label">💪 Strength</div>

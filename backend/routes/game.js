@@ -40,7 +40,9 @@ router.post("/start", async (req, res) => {
       turnCount: 0, // Track total choices made
       characterStats: {
         health: 100,
+        maxHealth: 100,
         mana: 50,
+        maxMana: 50,
         strength: 10,
         intelligence: 10,
         charisma: 10,
@@ -62,18 +64,25 @@ router.post("/start", async (req, res) => {
     // Store the response ID for future chaining
     gameState.previousResponseId = storyResponse.responseId;
 
-    // Update game state with first story entry
-    gameState.storyHistory.push({
-      narration: storyResponse.narration,
-      choices: storyResponse.choices,
-      playerAction: null,
-      timestamp: new Date(),
-    });
-
-    // Apply any stat changes from opening
+    // Apply any stat changes from opening (do this first to check game over)
     if (storyResponse.statChanges) {
       applyStatChanges(gameState.characterStats, storyResponse.statChanges);
     }
+
+    // Check for game over condition
+    const isGameOver = storyResponse.isGameOver || gameState.characterStats.health <= 0;
+    if (isGameOver) {
+      gameState.isGameOver = true;
+      gameState.gameOverReason = storyResponse.gameOverReason || "Your journey has ended";
+    }
+
+    // Update game state with first story entry
+    gameState.storyHistory.push({
+      narration: storyResponse.narration,
+      choices: isGameOver ? [] : storyResponse.choices,
+      playerAction: null,
+      timestamp: new Date(),
+    });
 
     // Track achievements and major choices
     if (storyResponse.achievements) {
@@ -111,13 +120,15 @@ router.post("/start", async (req, res) => {
       sessionId,
       responseId: gameState.previousResponseId,
       narration: storyResponse.narration,
-      choices: storyResponse.choices,
+      choices: isGameOver ? [] : storyResponse.choices,
       characterStats: gameState.characterStats,
       inventory: gameState.inventory,
       turnCount: gameState.turnCount,
       achievements: gameState.achievements,
       storyArc: gameState.storyArc,
       isGameEnding: gameState.turnCount >= 450,
+      isGameOver: isGameOver,
+      gameOverReason: gameState.gameOverReason || null,
     });
   } catch (error) {
     console.error("Error starting game:", error);
@@ -151,7 +162,12 @@ router.post("/action", async (req, res) => {
     // Store the new response ID for future chaining
     gameState.previousResponseId = storyResponse.responseId;
 
-    // Check for game over condition
+    // Apply stat changes first (before checking for game over)
+    if (storyResponse.statChanges) {
+      applyStatChanges(gameState.characterStats, storyResponse.statChanges);
+    }
+
+    // Check for game over condition (e.g. if health is now <= 0)
     const isGameOver = storyResponse.isGameOver || gameState.characterStats.health <= 0;
     if (isGameOver) {
       gameState.isGameOver = true;
@@ -166,20 +182,17 @@ router.post("/action", async (req, res) => {
     // Add new story entry
     gameState.storyHistory.push({
       narration: storyResponse.narration,
-      choices: storyResponse.choices,
+      choices: isGameOver ? [] : storyResponse.choices,
       playerAction: null,
       timestamp: new Date(),
     });
 
-    // Apply stat changes
-    if (storyResponse.statChanges) {
-      applyStatChanges(gameState.characterStats, storyResponse.statChanges);
+    // Track achievements and major choices
+    const turnAchievements = [];
+    if (storyResponse.achievements) {
+      turnAchievements.push(...storyResponse.achievements);
     }
 
-    // Track achievements and major choices
-    if (storyResponse.achievements) {
-      gameState.achievements.push(...storyResponse.achievements);
-    }
     if (storyResponse.majorChoice) {
       gameState.majorChoices.push(storyResponse.majorChoice);
     }
@@ -191,12 +204,37 @@ router.post("/action", async (req, res) => {
     }
 
     // Level up system
-    if (gameState.characterStats.experience >= gameState.characterStats.level * 100) {
+    let leveledUp = false;
+    while (gameState.characterStats.experience >= gameState.characterStats.level * 100) {
+      const xpNeeded = gameState.characterStats.level * 100;
       gameState.characterStats.level++;
-      gameState.characterStats.experience = 0;
-      // Boost stats on level up
-      gameState.characterStats.health = Math.min(gameState.characterStats.health + 20, 100 + (gameState.characterStats.level * 10));
-      gameState.characterStats.mana = Math.min(gameState.characterStats.mana + 10, 100 + (gameState.characterStats.level * 5));
+      gameState.characterStats.experience -= xpNeeded;
+      leveledUp = true;
+    }
+
+    if (leveledUp) {
+      const prevMaxHealth = gameState.characterStats.maxHealth || 100;
+      const prevMaxMana = gameState.characterStats.maxMana || 50;
+
+      gameState.characterStats.maxHealth = 100 + (gameState.characterStats.level - 1) * 20;
+      gameState.characterStats.maxMana = 50 + (gameState.characterStats.level - 1) * 15;
+
+      // Boost stats by the increase in max capacity on level up
+      gameState.characterStats.health += (gameState.characterStats.maxHealth - prevMaxHealth);
+      gameState.characterStats.mana += (gameState.characterStats.maxMana - prevMaxMana);
+
+      // Ensure they don't exceed max stats
+      gameState.characterStats.health = Math.min(gameState.characterStats.health, gameState.characterStats.maxHealth);
+      gameState.characterStats.mana = Math.min(gameState.characterStats.mana, gameState.characterStats.maxMana);
+
+      const levelUpAchievement = `Reached Level ${gameState.characterStats.level}`;
+      if (!gameState.achievements.includes(levelUpAchievement)) {
+        turnAchievements.push(levelUpAchievement);
+      }
+    }
+
+    if (turnAchievements.length > 0) {
+      gameState.achievements.push(...turnAchievements);
     }
 
     // Add any items found
@@ -265,6 +303,8 @@ router.get("/state/:sessionId", (req, res) => {
     relationships: gameState.relationships,
     storyArc: gameState.storyArc,
     isGameEnding: gameState.turnCount >= 450,
+    isGameOver: gameState.isGameOver || false,
+    gameOverReason: gameState.gameOverReason || null,
   });
 });
 
@@ -321,20 +361,21 @@ function generateSessionId() {
 }
 
 function applyStatChanges(currentStats, changes) {
-  // Define stat caps based on character level
-  const baseHealthCap = 100;
-  const baseManaCap = 100;
-  const levelBonus = (currentStats.level || 1) - 1;
-  const healthCap = baseHealthCap + (levelBonus * 20); // +20 HP per level
-  const manaCap = baseManaCap + (levelBonus * 15); // +15 MP per level
+  // Ensure maxHealth and maxMana are initialized
+  if (!currentStats.maxHealth) {
+    currentStats.maxHealth = 100 + ((currentStats.level || 1) - 1) * 20;
+  }
+  if (!currentStats.maxMana) {
+    currentStats.maxMana = 50 + ((currentStats.level || 1) - 1) * 15;
+  }
   
   Object.keys(changes).forEach((stat) => {
     if (currentStats.hasOwnProperty(stat)) {
       currentStats[stat] = Math.max(0, currentStats[stat] + changes[stat]);
       
-      // Apply dynamic caps based on level
-      if (stat === "health") currentStats[stat] = Math.min(currentStats[stat], healthCap);
-      if (stat === "mana") currentStats[stat] = Math.min(currentStats[stat], manaCap);
+      // Apply dynamic caps
+      if (stat === "health") currentStats[stat] = Math.min(currentStats[stat], currentStats.maxHealth);
+      if (stat === "mana") currentStats[stat] = Math.min(currentStats[stat], currentStats.maxMana);
       if (stat === "strength") currentStats[stat] = Math.min(currentStats[stat], 50);
       if (stat === "intelligence") currentStats[stat] = Math.min(currentStats[stat], 50);
       if (stat === "charisma") currentStats[stat] = Math.min(currentStats[stat], 50);

@@ -12,7 +12,7 @@ function App() {
   const [themes, setThemes] = useState([]);
   const [selectedTheme, setSelectedTheme] = useState(null);
   const [sessionId, setSessionId] = useState(null);
-  const [characterName, setCharacterName] = useState('Adventurer');
+  const [characterName, setCharacterName] = useState('');
   const [characterStats, setCharacterStats] = useState(null);
   const [inventory, setInventory] = useState([]);
   const [currentNarration, setCurrentNarration] = useState('');
@@ -29,6 +29,8 @@ function App() {
   const [isGameEnding, setIsGameEnding] = useState(false);
   const [isGameOver, setIsGameOver] = useState(false);
   const [gameOverReason, setGameOverReason] = useState(null);
+  const [savedSessionId, setSavedSessionId] = useState(null);
+  const [lastAction, setLastAction] = useState(null);
 
   // Load themes on mount
   useEffect(() => {
@@ -36,17 +38,65 @@ function App() {
     loadSavedSession();
   }, []);
 
-  const loadSavedSession = () => {
+  const loadSavedSession = async () => {
     try {
       const savedSession = localStorage.getItem('dungeonMasterSession');
       if (savedSession) {
         const session = JSON.parse(savedSession);
-        console.log('Loaded saved session from localStorage');
-        // Optionally restore the session state
-        // setSessionId(session.sessionId);
+        console.log('Found saved session in localStorage:', session.sessionId);
+        
+        // Verify session is active on server
+        try {
+          const state = await gameAPI.getGameState(session.sessionId);
+          if (state) {
+            setSavedSessionId(session.sessionId);
+            console.log('Saved session is active and verified.');
+          }
+        } catch (err) {
+          console.warn('Saved session expired or invalid on server. Clearing from storage.');
+          localStorage.removeItem('dungeonMasterSession');
+        }
       }
     } catch (err) {
       console.error('Failed to load saved session:', err);
+    }
+  };
+
+  const handleResumeSession = async () => {
+    if (!savedSessionId) return;
+    try {
+      setLoading(true);
+      setError(null);
+
+      const state = await gameAPI.getGameState(savedSessionId);
+
+      setSessionId(savedSessionId);
+      setSelectedTheme(state.theme);
+      setCharacterName(state.characterName);
+      setCharacterStats(state.characterStats);
+      setInventory(state.inventory || []);
+      setTurnCount(state.turnCount || 0);
+      setAchievements(state.achievements || []);
+      setStoryArc(state.storyArc || 'beginning');
+      setIsGameEnding(state.isGameEnding || false);
+      setIsGameOver(state.isGameOver || false);
+      setGameOverReason(state.gameOverReason || null);
+      setStoryHistory(state.storyHistory || []);
+
+      if (state.storyHistory && state.storyHistory.length > 0) {
+        const lastEntry = state.storyHistory[state.storyHistory.length - 1];
+        setCurrentNarration(lastEntry.narration);
+        setCurrentChoices(lastEntry.choices || []);
+      }
+
+      setGameState('playing');
+      setLoading(false);
+    } catch (err) {
+      setError('Failed to resume game. Starting a new adventure.');
+      localStorage.removeItem('dungeonMasterSession');
+      setSavedSessionId(null);
+      setLoading(false);
+      console.error(err);
     }
   };
 
@@ -68,7 +118,8 @@ function App() {
       setError(null);
       setSelectedTheme(themeId);
 
-      const response = await gameAPI.startGame(themeId, characterName);
+      const finalName = characterName.trim() || 'Adventurer';
+      const response = await gameAPI.startGame(themeId, finalName);
 
       setSessionId(response.sessionId);
       setCurrentNarration(response.narration);
@@ -79,6 +130,8 @@ function App() {
       setAchievements(response.achievements || []);
       setStoryArc(response.storyArc || 'beginning');
       setIsGameEnding(response.isGameEnding || false);
+      setIsGameOver(response.isGameOver || false);
+      setGameOverReason(response.gameOverReason || null);
       setStoryHistory([{
         narration: response.narration,
         choices: response.choices,
@@ -107,6 +160,7 @@ function App() {
       setError(null);
       setStatChanges(null);
       setItemChanges(null);
+      setLastAction(choice);
 
       const response = await gameAPI.sendAction(sessionId, choice);
 
@@ -173,12 +227,14 @@ function App() {
         setTimeout(() => setItemChanges(null), 4000);
       }
 
+      setLastAction(null);
       setLoading(false);
 
       // Scroll to top to see new narration
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err) {
       setError('Failed to process action. Please try again.');
+      setLastAction(null);
       setLoading(false);
       console.error(err);
     }
@@ -206,6 +262,8 @@ function App() {
     setIsGameEnding(false);
     setIsGameOver(false);
     setGameOverReason(null);
+    setSavedSessionId(null);
+    setLastAction(null);
   };
 
   return (
@@ -222,6 +280,10 @@ function App() {
           themes={themes}
           onSelectTheme={handleSelectTheme}
           loading={loading}
+          characterName={characterName}
+          setCharacterName={setCharacterName}
+          hasSavedSession={!!savedSessionId}
+          onResumeSession={handleResumeSession}
         />
       )}
 
@@ -263,7 +325,7 @@ function App() {
 
           <div className="game-layout">
             <div className="main-content">
-              <StoryDisplay narration={currentNarration} loading={loading} />
+              <StoryDisplay narration={currentNarration} loading={loading} lastAction={lastAction} />
 
               {statChanges && (
                 <div className="stat-changes-notification">
