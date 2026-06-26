@@ -26,10 +26,8 @@ The backend is already configured and ready to deploy.
 ### Step 3: Add Environment Variables
 In Render dashboard, add these environment variables:
 ```
-AZURE_OPENAI_ENDPOINT=https://open-ai-blusense.openai.azure.com
-AZURE_OPENAI_API_KEY=290bb1ae36cd437195b15f1a2938b52b
-AZURE_OPENAI_DEPLOYMENT_NAME=GPT-41
-AZURE_OPENAI_API_VERSION=2025-03-01-preview
+GROQ_API_KEYS=your_gsk_key_1, your_gsk_key_2, your_gsk_key_3
+GROQ_MODEL=llama-3.3-70b-versatile
 PORT=3001
 ```
 
@@ -116,10 +114,10 @@ Render's free tier can spin down after inactivity. First request may take 30-60 
 - **Free Tier:** 100GB bandwidth/month, 300 build minutes
 - **More than enough** for this project
 
-### Azure OpenAI
-- Pay-per-token usage
-- Estimated: **$15-25 for 450 complete games**
-- With Responses API optimization: ~150-200 tokens per turn
+### Groq API
+- Very high rate limits on Llama 3.3 70B.
+- Low cost (or free depending on your tier/keys quota).
+- Failover key rotation is built in to ensure maximum uptime.
 
 ---
 
@@ -143,10 +141,10 @@ git push origin main
 - [ ] Frontend deployed and accessible
 - [ ] Frontend `.env.production` updated with backend URL
 - [ ] Test: Start a new game
-- [ ] Test: Make 3-5 choices to verify Responses API working
-- [ ] Test: Check browser localStorage for responseId persistence
+- [ ] Test: Make 3-5 choices to verify Groq API working
+- [ ] Test: Check browser localStorage for sessionId persistence
 - [ ] Test: Refresh page and continue game
-- [ ] Monitor: Check token usage in backend logs
+- [ ] Monitor: Check request logs in backend logs
 
 ---
 
@@ -156,8 +154,8 @@ git push origin main
 1. Go to Render dashboard
 2. Click your service
 3. View "Logs" tab
-4. Look for "Story generated successfully via Responses API"
-5. Check token usage per request
+4. Look for "Story generated successfully via Groq" or key rotation logs like "Sending request to Groq using Key..."
+5. Check for any completion failure warnings.
 
 ### Frontend Errors
 1. Open browser DevTools (F12)
