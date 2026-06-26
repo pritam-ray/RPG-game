@@ -10,6 +10,12 @@ const api = axios.create({
 });
 
 export const gameAPI = {
+  // Wake up backend service by calling the health endpoint
+  checkHealth: async () => {
+    const response = await axios.get(`${API_URL}/health`);
+    return response.data;
+  },
+
   // Get available themes
   getThemes: async () => {
     const response = await api.get('/game/themes');

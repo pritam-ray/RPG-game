@@ -32,8 +32,13 @@ function App() {
   const [savedSessionId, setSavedSessionId] = useState(null);
   const [lastAction, setLastAction] = useState(null);
 
-  // Load themes on mount
+  // Load themes and wake up backend on mount
   useEffect(() => {
+    // Fire wake up request to sleeping Render service
+    gameAPI.checkHealth().catch((err) => {
+      console.warn('Backend wake-up call initiated/pending:', err.message);
+    });
+
     loadThemes();
     loadSavedSession();
   }, []);
