@@ -1,36 +1,20 @@
-import { AzureOpenAI } from "openai";
+import OpenAI from "openai";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
-const apiKey = process.env.AZURE_OPENAI_API_KEY;
-const apiVersion = process.env.AZURE_OPENAI_API_VERSION;
-const deploymentName = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-
-// Determine if we should run in Mock Mode (no Azure credentials provided)
-const isMockMode = !apiKey || 
-                   apiKey.trim() === "" || 
-                   apiKey === "your_api_key_here" || 
-                   !endpoint || 
-                   endpoint.includes("YOUR_RESOURCE");
-
-let client = null;
+// Determine if we should run in Mock Mode (no Groq keys provided)
+const groqKeysStr = process.env.GROQ_API_KEYS || process.env.VITE_GROQ_API_KEY || "";
+const isMockMode = !groqKeysStr || 
+                   groqKeysStr.trim() === "" || 
+                   groqKeysStr.includes("your_api_key_here") || 
+                   groqKeysStr.includes("your_api_key_1");
 
 if (!isMockMode) {
-  try {
-    client = new AzureOpenAI({
-      apiKey: apiKey,
-      endpoint: endpoint,
-      apiVersion: apiVersion,
-      deployment: deploymentName,
-    });
-    console.log("📡 Azure OpenAI Client initialized successfully.");
-  } catch (err) {
-    console.error("⚠️ Failed to initialize Azure OpenAI client. Falling back to Mock Mode.", err);
-  }
+  const keysCount = groqKeysStr.split(",").filter(k => k.trim() !== "").length;
+  console.log(`📡 Groq API configured with ${keysCount} keys. Running in active AI mode.`);
 } else {
-  console.log("🎲 Azure OpenAI credentials not configured. Running in local Mock Mode.");
+  console.log("🎲 Groq API credentials not configured. Running in local Mock Mode.");
 }
 
 // Local mock story database to provide an engaging offline experience
@@ -286,82 +270,134 @@ function generateMockResponse(gameState, playerAction) {
   };
 }
 
+async function callGroqAPIWithRotation(messages) {
+  const keysStr = process.env.GROQ_API_KEYS || process.env.VITE_GROQ_API_KEY || "";
+  const keys = keysStr.split(",")
+    .map(k => k.trim())
+    .filter(k => k !== "" && !k.includes("your_api_key"));
+
+  if (keys.length === 0) {
+    throw new Error("No valid Groq API keys configured. Set GROQ_API_KEYS in your environment.");
+  }
+
+  let lastError = null;
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    try {
+      console.log(`📡 Sending request to Groq using Key #${i + 1}...`);
+      const openai = new OpenAI({
+        apiKey: key,
+        baseURL: "https://api.groq.com/openai/v1",
+      });
+
+      const model = process.env.GROQ_MODEL || process.env.VITE_GROQ_MODEL || "llama-3.3-70b-versatile";
+
+      const completion = await openai.chat.completions.create({
+        model: model,
+        messages: messages,
+        response_format: { type: "json_object" },
+        temperature: 0.8,
+      });
+
+      const content = completion.choices[0].message.content;
+      if (!content || content.trim().length === 0) {
+        throw new Error("Received empty completion from Groq.");
+      }
+
+      console.log(`✅ Groq request succeeded using Key #${i + 1}`);
+      return content;
+    } catch (err) {
+      console.warn(`⚠️ Groq request with Key #${i + 1} failed:`, err.message);
+      lastError = err;
+    }
+  }
+
+  throw new Error(`All Groq API keys failed. Last error: ${lastError.message}`);
+}
+
 export async function generateStory(gameState, playerAction) {
   // If in Mock Mode, return simulated story structure
   if (isMockMode) {
     console.log(`🎮 Resolving turn ${gameState.turnCount} via local Mock Mode.`);
-    // Add small delay to simulate network latency for better UX testing
     await new Promise(resolve => setTimeout(resolve, 800));
     return generateMockResponse(gameState, playerAction);
   }
 
   try {
-    const { theme, previousResponseId, characterStats, turnCount, achievements, majorChoices, storyArc, relationships } = gameState;
-
+    const { theme, storyHistory, characterStats, turnCount } = gameState;
 
     // Get system prompt for this theme
     const instructions = getSystemPrompt(theme, turnCount);
 
-    // Build user message with progression context
-    const userMessage = buildUserMessage(playerAction, characterStats, turnCount, achievements, majorChoices, storyArc, relationships);
+    const messages = [];
 
-    // Build request for Responses API
-    const requestParams = {
-      model: deploymentName,
-      instructions: instructions,
-      input: [
-        {
-          role: "user",
-          content: userMessage,
+    // 1. Add system prompt
+    messages.push({
+      role: "system",
+      content: instructions + "\n\nCRITICAL: You MUST respond with valid JSON matching the schema ONLY.",
+    });
+
+    // 2. Add history (reconstruct from storyHistory)
+    if (storyHistory && storyHistory.length > 0) {
+      storyHistory.forEach((entry, idx) => {
+        // Reconstruct user action message
+        if (idx === 0) {
+          messages.push({
+            role: "user",
+            content: "START ADVENTURE",
+          });
+        } else {
+          const prevAction = storyHistory[idx - 1].playerAction || "Continue";
+          messages.push({
+            role: "user",
+            content: `PLAYER ACTION: "${prevAction}"`,
+          });
         }
-      ],
-      temperature: 0.8,
-    };
 
-    // If this is a continuation, include the previous response ID
-    if (previousResponseId) {
-      requestParams.previous_response_id = previousResponseId;
+        // Assistant message (the story generated at this step)
+        messages.push({
+          role: "assistant",
+          content: JSON.stringify({
+            narration: entry.narration,
+            choices: entry.choices || [],
+          }),
+        });
+      });
     }
 
-    const response = await client.responses.create(requestParams);
+    // 3. Add current active choice
+    const statsStr = `HP:${characterStats.health}/${characterStats.maxHealth || 100} MP:${characterStats.mana}/${characterStats.maxMana || 50} STR:${characterStats.strength} INT:${characterStats.intelligence} CHA:${characterStats.charisma} LVL:${characterStats.level || 1} XP:${characterStats.experience || 0}`;
+    const invStr = gameState.inventory && gameState.inventory.length > 0 
+      ? gameState.inventory.join(", ") 
+      : "empty";
 
-    // Extract the text output from the response
-    const outputText = response.output
-      .filter(item => item.type === "message" && item.role === "assistant")
-      .map(item => item.content
-        .filter(content => content.type === "output_text")
-        .map(content => content.text)
-        .join("")
-      )
-      .join("");
-
-    // Validate output before parsing
-    if (!outputText || outputText.trim().length === 0) {
-      throw new Error('Empty response from Azure OpenAI');
+    if (playerAction) {
+      messages.push({
+        role: "user",
+        content: `PLAYER ACTION: "${playerAction}"\n🎮 Current Stats: ${statsStr}\n🎒 Inventory: ${invStr}\n\nContinue the story with consequences.`,
+      });
+    } else if (!storyHistory || storyHistory.length === 0) {
+      messages.push({
+        role: "user",
+        content: `START ADVENTURE\n🎮 Starting Stats: ${statsStr}\n\nBegin the adventure.`,
+      });
     }
 
-    const parsed = JSON.parse(outputText);
-    
-    console.log('Story generated successfully via Responses API');
-    console.log('Response ID:', response.id);
-    console.log('Token usage:', response.usage);
-    
-    // Return both the parsed content and the response ID for chaining
+    // 4. Send request to Groq (with key rotation failovers)
+    const responseText = await callGroqAPIWithRotation(messages);
+    const parsed = JSON.parse(responseText);
+
+    const responseId = `groq_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+    console.log("Story generated successfully via Groq.");
+    console.log("Response ID:", responseId);
+
     return {
       ...parsed,
-      responseId: response.id,
+      responseId: responseId,
     };
   } catch (error) {
-    console.error("Azure OpenAI Responses API Error:", error);
-    
-    // If previous response not found, retry without it
-    if (error.code === 'previous_response_not_found' && previousResponseId) {
-      console.log('Previous response expired, creating new response chain...');
-      gameState.previousResponseId = null;
-      return generateStory(gameState, playerAction);
-    }
-    
-    throw new Error(`Failed to generate story: ${error.message}`);
+    console.error("Groq completions error:", error);
+    throw new Error(`Failed to generate story with Groq: ${error.message}`);
   }
 }
 
